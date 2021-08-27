@@ -1,8 +1,9 @@
 #include "raylib.h"
+#include "raymath.h"
 #include <stdio.h>
 
-#define MAX_ALIEN_COUNT 64
-#define MAX_BULLET_COUNT 64
+#define MAX_ALIEN_COUNT 128
+#define MAX_BULLET_COUNT 256
 
 typedef enum GameState
 {
@@ -45,16 +46,13 @@ static const int targetFPS = 60;
 static const float cameraZoom = 4;
 static const int playerWidth = 8;
 static const int playerHalfWidth = 4;
-static const int playerHeight = 8;
 static const int playerHalfHeight = 4;
 static const int alienWidth = 8;
 static const int alienHalfWidth = 4;
 static const int alienHeight = 8;
 static const int alienHalfHeight = 4;
-static const int playerBulletRadius = 4;
-static const int playerBulletDiameter = 8;
+static const int playerBulletRadius = 3;
 static const int alienBulletRadius = 2;
-static const int alienBulletDiameter = 4;
 static const Color playerBulletColor = GOLD;
 static const Color alienBulletColor = PURPLE;
 static const int playerSpeed = 3;
@@ -85,6 +83,11 @@ static float loseElapsed;
 static int alienFrameIndex;
 static float alienFrameElapsed;
 static bool alienDirection;
+static int alienCount;
+static Sound shootSound;
+static Sound playerDeathSound;
+static Sound alienDeathSound;
+static Music music;
 
 void Initialize();
 void Update();
@@ -118,6 +121,9 @@ void UpdateLoseState();
 
 void UpdateAlienAnimations();
 
+void ShootPlayerBullet();
+void ShootAlienBullet(int alienIndex);
+
 int main(int argc, char *argv[])
 {
     Initialize();
@@ -136,6 +142,12 @@ void Initialize()
     SetTargetFPS(targetFPS);
     playerTexture = LoadTexture("Player.png");
     alienTexture = LoadTexture("Alien.png");
+    InitAudioDevice();
+    shootSound = LoadSound("Shoot.wav");
+    playerDeathSound = LoadSound("PlayerDeath.wav");
+    alienDeathSound = LoadSound("AlienDeath.wav");
+    music = LoadMusicStream("Music.wav");
+    PlayMusicStream(music);
     gameState = startState;
     player.position = (Vector2) { screenHalfWidth - playerHalfWidth, screenHalfHeight - playerHalfHeight };
     player.livesRemaining = 3;
@@ -163,6 +175,7 @@ void Initialize()
     alienFrameIndex = 0;
     alienFrameElapsed = 0;
     alienDirection = 0;
+    alienCount = 0;
 }
 
 void Update()
@@ -178,6 +191,7 @@ void Update()
         UpdateWinState();
     else if (gameState == loseState)
         UpdateLoseState();
+    UpdateMusicStream(music);
 }
 
 void Draw()
@@ -199,8 +213,13 @@ void Draw()
 
 void Terminate()
 {
+    UnloadMusicStream(music);
+    UnloadSound(shootSound);
+    UnloadSound(playerDeathSound);
+    UnloadSound(alienDeathSound);
     UnloadTexture(playerTexture);
     UnloadTexture(alienTexture);
+    CloseAudioDevice();
     CloseWindow();
 }
 
@@ -212,15 +231,17 @@ void FromStartToReadyState()
 void FromReadyToPlayState()
 {
     gameState = playState;
+    readyElapsed = 0;
     const int rows = Clamp(wave / 3 + 1, 1, 5);
     for (int row = 0; row < rows; ++row)
     {
-        for (int column = -5; column <= 5; ++column)
+        for (int column = -7; column <= 7; ++column)
         {
-            aliens[nextAvailableAlien].position = (Vector2) { camera.target.x - column * (alienWidth + alienHalfWidth), cameraBounds.y + 20 };
+            aliens[nextAvailableAlien].position = (Vector2) { camera.target.x - column * (alienWidth + alienHalfWidth), cameraBounds.y + 10 + (alienHeight + alienHalfHeight) * (row + 1) };
             aliens[nextAvailableAlien].alive = true;
             ++nextAvailableAlien;
             nextAvailableAlien %= MAX_ALIEN_COUNT;
+            ++alienCount;
         }
     }
 }
@@ -228,26 +249,50 @@ void FromReadyToPlayState()
 void FromPlayToWinState()
 {
     gameState = winState;
+    for (int i = 0; i < MAX_BULLET_COUNT; ++i)
+    {
+        bullets[i].active = false;
+    }
 }
 
 void FromPlayToLoseState()
 {
     gameState = loseState;
+    for (int i = 0; i < MAX_BULLET_COUNT; ++i)
+    {
+        bullets[i].active = false;
+    }
 }
 
 void FromWinToReadyState()
 {
     gameState = readyState;
+    winElapsed = 0;
+    player.position = (Vector2) { screenHalfWidth - playerHalfWidth, screenHalfHeight - playerHalfHeight };
+    ++wave;
 }
 
 void FromLoseToReadyState()
 {
     gameState = readyState;
+    loseElapsed = 0;
+    player.position = (Vector2) { screenHalfWidth - playerHalfWidth, screenHalfHeight - playerHalfHeight };
+    for (int i = 0; i < MAX_ALIEN_COUNT; ++i)
+    {
+        aliens[i].alive = false;
+    }
+    alienCount = 0;
+    --player.livesRemaining;
 }
 
 void FromLoseToStartState()
 {
     gameState = startState;
+    loseElapsed = 0;
+    player.position = (Vector2) { screenHalfWidth - playerHalfWidth, screenHalfHeight - playerHalfHeight };
+    player.livesRemaining = 3;
+    alienCount = 0;
+    wave = 1;
 }
 
 void DrawStartState()
@@ -261,10 +306,15 @@ void DrawStartState()
 
 void DrawReadyState()
 {
-    char readyBuffer[14];
-    sprintf(readyBuffer, "Ready Wave %d", wave);
+    char readyBuffer[15];
+    sprintf(readyBuffer, "Ready Wave %d!", wave);
     const int readyHalfWidth = MeasureText(readyBuffer, textSize) * 0.5;
     DrawText(readyBuffer, screenHalfWidth - readyHalfWidth, 40, textSize, WHITE);
+    if (wave == 25)
+    {
+        const int maxHalfWidth = MeasureText("Maximum Difficulty", textSize) * 0.5;
+        DrawText("Maximum Difficulty", screenHalfWidth - maxHalfWidth, 80, textSize, RED);
+    }
     DrawBottomShelf();
     BeginMode2D(camera);
     DrawPlayer();
@@ -352,7 +402,7 @@ void DrawBullets()
 
 void UpdateStartState()
 {
-    if (IsKeyDown(KEY_SPACE))
+    if (IsKeyDown(KEY_ENTER))
     {
         FromStartToReadyState();
     }
@@ -376,7 +426,6 @@ void UpdatePlayState()
         {
             player.position.x = cameraBounds.x;
         }
-        
     }
     if (IsKeyDown(KEY_D))
     {
@@ -386,13 +435,9 @@ void UpdatePlayState()
             player.position.x = cameraBounds.x + cameraBounds.width - playerWidth;
         }
     }
-    if (IsKeyPressed(KEY_SPACE))
+    if (IsKeyPressed(KEY_ENTER))
     {
-        bullets[nextAvailableBullet].position = (Vector2) { player.position.x + playerHalfWidth, player.position.y - playerBulletRadius };
-        bullets[nextAvailableBullet].belongsToPlayer = true;
-        bullets[nextAvailableBullet].active = true;
-        ++nextAvailableBullet;
-        nextAvailableBullet %= MAX_BULLET_COUNT;
+        ShootPlayerBullet();
     }
     UpdateAlienAnimations();
     int newAlienDirection = alienDirection;
@@ -416,7 +461,10 @@ void UpdatePlayState()
                     newAlienDirection = 0;
                 }
             }
-            // Todo: Shoot alien bullets.
+            if (GetRandomValue(1, Clamp(300 - (wave - 1) * 10, 60, 300)) == 1)
+            {
+                ShootAlienBullet(i);
+            }
         }
     }
     alienDirection = newAlienDirection;
@@ -427,14 +475,39 @@ void UpdatePlayState()
             if (bullets[i].belongsToPlayer)
             {
                 bullets[i].position.y -= playerBulletSpeed;
+                for (int j = 0; j < MAX_ALIEN_COUNT; ++j)
+                {
+                    if (aliens[j].alive)
+                    {
+                        if (CheckCollisionCircles(bullets[i].position, playerBulletRadius, (Vector2) { aliens[j].position.x + alienHalfWidth, aliens[j].position.y + alienHalfHeight }, alienHalfWidth))
+                        {
+                            bullets[i].active = false;
+                            aliens[j].alive = false;
+                            --alienCount;
+                            PlaySound(alienDeathSound);
+                            if (alienCount == 0)
+                            {
+                                FromPlayToWinState();
+                                return;
+                            }
+                            break;
+                        }
+                    }
+                }
             }
             else
             {
                 bullets[i].position.y += alienBulletSpeed;
-            }
-            if (bullets[i].position.y < cameraBounds.y)
-            {
-                bullets[i].active = false;
+                if (CheckCollisionCircles(bullets[i].position, alienBulletRadius, (Vector2) { player.position.x + playerHalfWidth, player.position.y + playerHalfHeight }, playerHalfWidth))
+                {
+                    PlaySound(playerDeathSound);
+                    FromPlayToLoseState();
+                    return;
+                }
+                else if (bullets[i].position.y < cameraBounds.y)
+                {
+                    bullets[i].active = false;
+                }
             }
         }
     }
@@ -455,7 +528,7 @@ void UpdateLoseState()
     loseElapsed += frameTime;
     if (loseElapsed > delayThreshold)
     {
-        if (player.livesRemaining > 0)
+        if (player.livesRemaining > 1)
         {
             FromLoseToReadyState();
         }
@@ -475,4 +548,24 @@ void UpdateAlienAnimations()
         ++alienFrameIndex;
         alienFrameIndex %= animationFrameCount;
     }
+}
+
+void ShootPlayerBullet()
+{
+    bullets[nextAvailableBullet].position = (Vector2) { player.position.x + playerHalfWidth, player.position.y - playerBulletRadius };
+    bullets[nextAvailableBullet].belongsToPlayer = true;
+    bullets[nextAvailableBullet].active = true;
+    ++nextAvailableBullet;
+    nextAvailableBullet %= MAX_BULLET_COUNT;
+    PlaySound(shootSound);
+}
+
+void ShootAlienBullet(int alienIndex)
+{
+    bullets[nextAvailableBullet].position = (Vector2) { aliens[alienIndex].position.x + alienHalfWidth, aliens[alienIndex].position.y + alienWidth + alienBulletRadius };
+    bullets[nextAvailableBullet].belongsToPlayer = false;
+    bullets[nextAvailableBullet].active = true;
+    ++nextAvailableBullet;
+    nextAvailableBullet %= MAX_BULLET_COUNT;
+    PlaySound(shootSound);
 }
