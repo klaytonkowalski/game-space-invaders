@@ -1,6 +1,6 @@
 # Space Invaders
 Space Invaders clone made with Raylib.  
-My second game with Raylib! Took roughly ten hours to complete.
+My second game with Raylib!
 
 Please click the "Star" button on GitHub if you find this project to be interesting!
 
